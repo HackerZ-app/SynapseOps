@@ -2,8 +2,7 @@ import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
   /* config options here */
-  cacheComponents: true,
-  partialPrefetching: true,
+  serverExternalPackages: ['falkordb', '@redis/client', '@redis/bloom', '@redis/json', '@redis/search', '@redis/time-series', 'redis'],
   turbopack: {
     rules: {
       "*.css": {

@@ -9,9 +9,14 @@
     "lint": "eslint"
   },
   "dependencies": {
+    "@google/genai": "^2.30.0",
+    "clsx": "^2.1.1",
+    "falkordb": "^6.8.0",
+    "lucide-react": "^1.59.0",
     "next": "16.4.2",
     "react": "19.3.0",
-    "react-dom": "19.3.0"
+    "react-dom": "19.3.0",
+    "tailwind-merge": "^3.7.0"
   },
   "devDependencies": {
     "@tailwindcss/turbopack": "^4",

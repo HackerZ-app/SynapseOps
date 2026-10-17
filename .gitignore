@@ -30,8 +30,16 @@ yarn-debug.log*
 yarn-error.log*
 .pnpm-debug.log*
 
-# env files (can opt-in for committing if needed)
+# env files (keep .env.local secret, but commit .env.example for judges)
 .env*
+.env.local
+.env.local*
+!.env.example
+
+# falkordb local docker data & dumps
+/falkordb_data/
+/data/
+*.rdb
 
 # vercel
 .vercel

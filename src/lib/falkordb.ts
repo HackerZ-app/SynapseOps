@@ -7,7 +7,8 @@
  * into a circular buffer for the War Room's Live Cypher Execution Log.
  */
 
-import { FalkorDB, Graph } from 'falkordb';
+import { FalkorDB } from 'falkordb';
+import type Graph from 'falkordb/dist/src/graph';
 
 // ─── Telemetry Types ────────────────────────────────────────────────────────
 
@@ -21,7 +22,8 @@ export interface QueryTelemetry {
   tenantId: string;
 }
 
-export interface QueryResult<T = Record<string, unknown>[]> {
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export interface QueryResult<T = any[]> {
   data: T;
   metadata: Record<string, unknown>;
   telemetry: QueryTelemetry;
@@ -76,6 +78,28 @@ export async function getTenantGraph(tenantId: string): Promise<Graph> {
 // ─── Instrumented Query Helpers ─────────────────────────────────────────────
 
 /**
+ * Sanitize params to match FalkorDB's QueryParams type.
+ * Strips `unknown` values down to accepted primitives.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function sanitizeParams(params: Record<string, unknown>): Record<string, any> {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const clean: Record<string, any> = {};
+  for (const [key, value] of Object.entries(params)) {
+    if (value === null || typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
+      clean[key] = value;
+    } else if (Array.isArray(value)) {
+      clean[key] = value;
+    } else if (typeof value === 'object' && value !== null) {
+      clean[key] = sanitizeParams(value as Record<string, unknown>);
+    } else {
+      clean[key] = String(value);
+    }
+  }
+  return clean;
+}
+
+/**
  * Execute a WRITE query against a tenant's isolated FalkorDB graph.
  * Measures latency with performance.now() and logs telemetry.
  */
@@ -86,9 +110,10 @@ export async function executeWriteQuery(
   params: Record<string, unknown> = {}
 ): Promise<QueryResult> {
   const graph = await getTenantGraph(tenantId);
+  const cleanParams = sanitizeParams(params);
   const start = performance.now();
 
-  const result = await graph.query(cypher, { params });
+  const result = await graph.query(cypher, { params: cleanParams });
 
   const durationMs = Math.round((performance.now() - start) * 1000) / 1000;
 
@@ -124,9 +149,10 @@ export async function executeReadQuery(
   params: Record<string, unknown> = {}
 ): Promise<QueryResult> {
   const graph = await getTenantGraph(tenantId);
+  const cleanParams = sanitizeParams(params);
   const start = performance.now();
 
-  const result = await graph.roQuery(cypher, { params });
+  const result = await graph.roQuery(cypher, { params: cleanParams });
 
   const durationMs = Math.round((performance.now() - start) * 1000) / 1000;
 
