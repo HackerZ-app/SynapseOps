@@ -11,21 +11,23 @@
  *      - Procedural (Emerald/Green #10b981 / #059669)
  *      - Coordination (Amber/Orange #f59e0b / #f97316)
  *   2. Active Reasoning Subgraph Highlighting with Glow & Dimming
- *   3. Interactive Zoom, Pan, Drag-to-Reposition, and Layer Filters
- *   4. FalkorDB Node Inspector side drawer with raw properties & relationships
+ *   3. 1:1 Precision SVG Drag-to-Reposition & Smooth Canvas Background Panning
+ *   4. True Fullscreen Mode (100vw x 100vh with Browser Fullscreen API integration)
+ *   5. Pairwise Anti-Collision Relaxation Layout & Toolbar Clearance
+ *   6. FalkorDB Node Inspector side drawer with raw properties & relationships
  */
 
-import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
+import React, { useState, useEffect, useRef, useMemo, useCallback } from "react";
 import {
   ZoomIn,
   ZoomOut,
+  RotateCcw,
   Maximize2,
+  Minimize2,
   Filter,
-  Eye,
   Layers,
   Sparkles,
   X,
-  Info,
   Server,
   Brain,
   History,
@@ -33,7 +35,7 @@ import {
   Shield,
   ArrowRight,
   Flame,
-} from 'lucide-react';
+} from "lucide-react";
 
 export interface GraphNode {
   id: number | string;
@@ -64,34 +66,35 @@ interface CognitiveGraphCanvasProps {
 
 // ─── Layer Color Helpers ───────────────────────────────────────────────────
 
-function getNodeLayer(labels: string[]): 'semantic' | 'episodic' | 'procedural' | 'coordination' {
-  if (labels.includes('Service') || labels.includes('Team')) return 'semantic';
-  if (labels.includes('Episode') || labels.includes('Session') || labels.includes('Turn')) return 'episodic';
-  if (labels.includes('Procedure') || labels.includes('Step')) return 'procedural';
-  return 'coordination';
+function getNodeLayer(labels: string[]): "semantic" | "episodic" | "procedural" | "coordination" {
+  if (labels.includes("Service") || labels.includes("Team")) return "semantic";
+  if (labels.includes("Episode") || labels.includes("Session") || labels.includes("Turn"))
+    return "episodic";
+  if (labels.includes("Procedure") || labels.includes("Step")) return "procedural";
+  return "coordination";
 }
 
 function getNodeColor(labels: string[], isHighlighted: boolean, isDimmed: boolean) {
-  if (isDimmed) return '#263143';
+  if (isDimmed) return "#1c2233";
 
-  if (labels.includes('Service')) return '#06b6d4'; // Cyan
-  if (labels.includes('Team')) return '#3b82f6'; // Blue
-  if (labels.includes('Episode')) return '#a855f7'; // Purple
-  if (labels.includes('Session') || labels.includes('Turn')) return '#8b5cf6'; // Violet
-  if (labels.includes('Procedure')) return '#10b981'; // Emerald
-  if (labels.includes('Step')) return '#059669'; // Green
-  if (labels.includes('Agent')) return '#f59e0b'; // Amber
-  if (labels.includes('TaskState')) return '#f97316'; // Orange
-  return '#94a3b8';
+  if (labels.includes("Service")) return "#06b6d4"; // Cyan
+  if (labels.includes("Team")) return "#3b82f6"; // Blue
+  if (labels.includes("Episode")) return "#a855f7"; // Purple
+  if (labels.includes("Session") || labels.includes("Turn")) return "#8b5cf6"; // Violet
+  if (labels.includes("Procedure")) return "#10b981"; // Emerald
+  if (labels.includes("Step")) return "#059669"; // Green
+  if (labels.includes("Agent")) return "#f59e0b"; // Amber
+  if (labels.includes("TaskState")) return "#f97316"; // Orange
+  return "#94a3b8";
 }
 
 function getNodeRadius(labels: string[]): number {
-  if (labels.includes('Service')) return 22;
-  if (labels.includes('Procedure')) return 20;
-  if (labels.includes('Episode')) return 18;
-  if (labels.includes('Agent')) return 20;
-  if (labels.includes('Team')) return 16;
-  if (labels.includes('TaskState')) return 16;
+  if (labels.includes("Service")) return 22;
+  if (labels.includes("Procedure")) return 20;
+  if (labels.includes("Episode")) return 18;
+  if (labels.includes("Agent")) return 20;
+  if (labels.includes("Team")) return 16;
+  if (labels.includes("TaskState")) return 16;
   return 14;
 }
 
@@ -102,20 +105,30 @@ export default function CognitiveGraphCanvas({
   highlightedEdgeTypes = [],
   onSelectNode,
   selectedNodeId,
-  className = '',
+  className = "",
   onSimulateIncident,
 }: CognitiveGraphCanvasProps) {
   const containerRef = useRef<HTMLDivElement>(null);
+  const svgRef = useRef<SVGSVGElement>(null);
+
+  // Fullscreen State
+  const [isFullscreen, setIsFullscreen] = useState(false);
 
   // Viewport transform (Pan & Zoom)
   const [zoom, setZoom] = useState(1);
   const [pan, setPan] = useState({ x: 0, y: 0 });
   const [isPanning, setIsPanning] = useState(false);
-  const [panStart, setPanStart] = useState({ x: 0, y: 0 });
+  const panStartRef = useRef({ clientX: 0, clientY: 0, panX: 0, panY: 0 });
 
-  // Dragging individual nodes
+  // 1:1 Node Dragging Tracking
   const [draggingNodeId, setDraggingNodeId] = useState<string | number | null>(null);
-  const [nodePositions, setNodePositions] = useState<Record<string | number, { x: number; y: number }>>({});
+  const dragOffsetRef = useRef({ x: 0, y: 0 });
+  const dragStartPosRef = useRef({ x: 0, y: 0 });
+  const hasDraggedRef = useRef(false);
+
+  const [nodePositions, setNodePositions] = useState<
+    Record<string | number, { x: number; y: number }>
+  >({});
 
   // Filters & Modes
   const [showActivePathOnly, setShowActivePathOnly] = useState(false);
@@ -131,98 +144,197 @@ export default function CognitiveGraphCanvas({
   // Selected Node for Drawer
   const [inspectedNode, setInspectedNode] = useState<GraphNode | null>(null);
 
-  // Initialize smart layout positions
-  useEffect(() => {
-    if (nodes.length === 0) return;
+  // Helper: Convert mouse clientX/clientY to exact SVG internal coordinates using getScreenCTM()
+  const clientToSvgPoint = useCallback((clientX: number, clientY: number) => {
+    const svg = svgRef.current;
+    if (!svg) return { x: clientX, y: clientY };
+    const pt = svg.createSVGPoint();
+    pt.x = clientX;
+    pt.y = clientY;
+    const ctm = svg.getScreenCTM();
+    if (!ctm) return { x: clientX, y: clientY };
+    const transformed = pt.matrixTransform(ctm.inverse());
+    return { x: transformed.x, y: transformed.y };
+  }, []);
 
-    const width = 880;
-    const height = 560;
+  // Compute Layout Positions with Pairwise Anti-Collision Relaxation
+  const computeLayoutPositions = useCallback(() => {
+    if (nodes.length === 0) return {};
+
+    const width = containerRef.current?.clientWidth || 980;
+    const height = containerRef.current?.clientHeight || 620;
     const centerX = width / 2;
-    const centerY = height / 2;
+    const centerY = height / 2 + 25;
     const paddingX = 95;
 
     const newPositions: Record<string | number, { x: number; y: number }> = {};
 
     const layoutNodes = hideGranularNodes
-      ? nodes.filter((n) => !n.labels.includes('Turn') && !n.labels.includes('Step'))
+      ? nodes.filter((n) => !n.labels.includes("Turn") && !n.labels.includes("Step"))
       : nodes;
 
-    // Group by layer for concentric ring layout
-    const semanticNodes = layoutNodes.filter((n) => getNodeLayer(n.labels) === 'semantic');
-    const episodicNodes = layoutNodes.filter((n) => getNodeLayer(n.labels) === 'episodic');
-    const proceduralNodes = layoutNodes.filter((n) => getNodeLayer(n.labels) === 'procedural');
-    const coordNodes = layoutNodes.filter((n) => getNodeLayer(n.labels) === 'coordination');
+    // Group by layer
+    const semanticNodes = layoutNodes.filter((n) => getNodeLayer(n.labels) === "semantic");
+    const episodicNodes = layoutNodes.filter((n) => getNodeLayer(n.labels) === "episodic");
+    const proceduralNodes = layoutNodes.filter((n) => getNodeLayer(n.labels) === "procedural");
+    const coordNodes = layoutNodes.filter((n) => getNodeLayer(n.labels) === "coordination");
 
-    // Ring 1: Semantic (Center-Left) with staggered Y-offsets
-    semanticNodes.forEach((node, i) => {
-      const angle = (i / Math.max(semanticNodes.length, 1)) * Math.PI * 2;
-      const radius = 125;
-      const yOffset = i % 2 === 0 ? -24 : 24;
-      const rawX = centerX - 150 + Math.cos(angle) * radius;
-      const rawY = centerY + 10 + Math.sin(angle) * (radius * 0.78) + yOffset;
-      newPositions[node.id] = {
-        x: Math.max(paddingX, Math.min(width - paddingX, rawX)),
-        y: Math.max(45, Math.min(height - 45, rawY)),
-      };
-    });
-
-    // Ring 2: Procedural (Center-Right) with staggered Y-offsets
-    proceduralNodes.forEach((node, i) => {
-      const angle = (i / Math.max(proceduralNodes.length, 1)) * Math.PI * 2;
-      const radius = 140;
-      const yOffset = i % 2 === 0 ? -24 : 24;
-      const rawX = centerX + 165 + Math.cos(angle) * radius;
-      const rawY = centerY + 10 + Math.sin(angle) * (radius * 0.82) + yOffset;
-      newPositions[node.id] = {
-        x: Math.max(paddingX, Math.min(width - paddingX, rawX)),
-        y: Math.max(45, Math.min(height - 45, rawY)),
-      };
-    });
-
-    // Ring 3: Episodic (Bottom Arc) with staggered Y-offsets
-    episodicNodes.forEach((node, i) => {
-      const count = Math.max(episodicNodes.length, 1);
-      const angle = Math.PI * 0.2 + (i / count) * Math.PI * 0.6;
-      const radius = 215;
-      const yOffset = i % 2 === 0 ? -24 : 24;
-      const rawX = centerX + Math.cos(angle) * radius * 1.25;
-      const rawY = centerY + Math.sin(angle) * radius * 0.8 + 40 + yOffset;
-      newPositions[node.id] = {
-        x: Math.max(paddingX, Math.min(width - paddingX, rawX)),
-        y: Math.max(50, Math.min(height - 40, rawY)),
-      };
-    });
-
-    // Coordination (Top Arc) - Generous horizontal spacing and safe margins
+    // Coordination (Top Layer)
+    // Starting Y is placed at 115 so nodes never sit underneath the top-left LAYERS toolbar
     coordNodes.forEach((node, i) => {
       const count = coordNodes.length;
       const usableWidth = width - paddingX * 2;
-      const rawX = count <= 1
-        ? centerX
-        : paddingX + 35 + (i / (count - 1)) * (usableWidth - 70);
-      const yOffset = i % 2 === 0 ? -24 : 24;
+      const rawX =
+        count <= 1
+          ? centerX
+          : paddingX + 40 + (i / Math.max(1, count - 1)) * (usableWidth - 80);
+      const yOffset = i % 2 === 0 ? -15 : 15;
       newPositions[node.id] = {
         x: Math.max(paddingX, Math.min(width - paddingX, rawX)),
-        y: 74 + yOffset,
+        y: 115 + yOffset,
       };
     });
 
-    // Fallback placement for granular nodes when compact mode is toggled off
+    // Ring 1: Semantic (Center-Left)
+    semanticNodes.forEach((node, i) => {
+      const angle = (i / Math.max(semanticNodes.length, 1)) * Math.PI * 2;
+      const radius = 135;
+      const yOffset = i % 2 === 0 ? -20 : 20;
+      const rawX = centerX - 165 + Math.cos(angle) * radius;
+      const rawY = centerY + Math.sin(angle) * (radius * 0.8) + yOffset;
+      newPositions[node.id] = {
+        x: Math.max(paddingX, Math.min(width - paddingX, rawX)),
+        y: Math.max(110, Math.min(height - 65, rawY)),
+      };
+    });
+
+    // Ring 2: Procedural (Center-Right)
+    proceduralNodes.forEach((node, i) => {
+      const angle = (i / Math.max(proceduralNodes.length, 1)) * Math.PI * 2;
+      const radius = 145;
+      const yOffset = i % 2 === 0 ? -20 : 20;
+      const rawX = centerX + 180 + Math.cos(angle) * radius;
+      const rawY = centerY + Math.sin(angle) * (radius * 0.82) + yOffset;
+      newPositions[node.id] = {
+        x: Math.max(paddingX, Math.min(width - paddingX, rawX)),
+        y: Math.max(110, Math.min(height - 65, rawY)),
+      };
+    });
+
+    // Ring 3: Episodic (Bottom Arc)
+    episodicNodes.forEach((node, i) => {
+      const count = Math.max(episodicNodes.length, 1);
+      const angle = Math.PI * 0.15 + (i / count) * Math.PI * 0.7;
+      const radius = 220;
+      const yOffset = i % 2 === 0 ? -18 : 18;
+      const rawX = centerX + Math.cos(angle) * radius * 1.25;
+      const rawY = centerY + Math.sin(angle) * radius * 0.75 + 30 + yOffset;
+      newPositions[node.id] = {
+        x: Math.max(paddingX, Math.min(width - paddingX, rawX)),
+        y: Math.max(110, Math.min(height - 65, rawY)),
+      };
+    });
+
+    // Fallback placement for granular nodes when compact view is toggled off
     if (!hideGranularNodes) {
-      const granularNodes = nodes.filter((n) => n.labels.includes('Turn') || n.labels.includes('Step'));
+      const granularNodes = nodes.filter(
+        (n) => n.labels.includes("Turn") || n.labels.includes("Step")
+      );
       granularNodes.forEach((node, i) => {
         if (!newPositions[node.id]) {
           const angle = (i / Math.max(granularNodes.length, 1)) * Math.PI * 2;
           newPositions[node.id] = {
             x: Math.max(paddingX, Math.min(width - paddingX, centerX + Math.cos(angle) * 195)),
-            y: Math.max(45, Math.min(height - 45, centerY + Math.sin(angle) * 175)),
+            y: Math.max(110, Math.min(height - 65, centerY + Math.sin(angle) * 175)),
           };
         }
       });
     }
 
-    setNodePositions(newPositions);
+    // 40-Iteration Pairwise Anti-Collision Relaxation Loop
+    // Guarantees Ledger-DB, Auth-Service, and all other nodes never overlap
+    const nodeIds = Object.keys(newPositions);
+    const minDistance = 105;
+    for (let iter = 0; iter < 40; iter++) {
+      for (let i = 0; i < nodeIds.length; i++) {
+        for (let j = i + 1; j < nodeIds.length; j++) {
+          const idA = nodeIds[i];
+          const idB = nodeIds[j];
+          const posA = newPositions[idA];
+          const posB = newPositions[idB];
+          const dx = posB.x - posA.x;
+          const dy = posB.y - posA.y;
+          const dist = Math.hypot(dx, dy);
+
+          if (dist < minDistance && dist > 0.001) {
+            const overlap = (minDistance - dist) / 2;
+            const nx = (dx / dist) * overlap * 0.45;
+            const ny = (dy / dist) * overlap * 0.45;
+
+            posA.x = Math.max(paddingX, Math.min(width - paddingX, posA.x - nx));
+            posA.y = Math.max(110, Math.min(height - 65, posA.y - ny));
+            posB.x = Math.max(paddingX, Math.min(width - paddingX, posB.x + nx));
+            posB.y = Math.max(110, Math.min(height - 65, posB.y + ny));
+          } else if (dist <= 0.001) {
+            posA.x += 15;
+            posB.x -= 15;
+          }
+        }
+      }
+    }
+
+    return newPositions;
   }, [nodes, hideGranularNodes]);
+
+  // Initialize node positions
+  useEffect(() => {
+    setNodePositions(computeLayoutPositions());
+  }, [computeLayoutPositions]);
+
+  // Sync Fullscreen with Browser Events
+  useEffect(() => {
+    const handleFullscreenChange = () => {
+      setIsFullscreen(Boolean(document.fullscreenElement));
+    };
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        setIsFullscreen(false);
+      }
+    };
+    document.addEventListener("fullscreenchange", handleFullscreenChange);
+    document.addEventListener("keydown", handleKeyDown);
+    return () => {
+      document.removeEventListener("fullscreenchange", handleFullscreenChange);
+      document.removeEventListener("keydown", handleKeyDown);
+    };
+  }, []);
+
+  // Toggle Fullscreen Mode
+  const toggleFullscreen = useCallback(async () => {
+    try {
+      if (!document.fullscreenElement && !isFullscreen) {
+        if (containerRef.current?.requestFullscreen) {
+          await containerRef.current.requestFullscreen();
+        }
+        setIsFullscreen(true);
+      } else {
+        if (document.fullscreenElement && document.exitFullscreen) {
+          await document.exitFullscreen();
+        }
+        setIsFullscreen(false);
+      }
+    } catch {
+      // Graceful fallback to CSS fixed fullscreen if browser blocks requestFullscreen
+      setIsFullscreen((prev) => !prev);
+    }
+  }, [isFullscreen]);
+
+  // Reset View and Re-Layout
+  const handleResetView = useCallback(() => {
+    setZoom(1);
+    setPan({ x: 0, y: 0 });
+    setNodePositions(computeLayoutPositions());
+  }, [computeLayoutPositions]);
 
   // Sync selectedNodeId prop with inspectedNode
   useEffect(() => {
@@ -236,12 +348,12 @@ export default function CognitiveGraphCanvas({
     }
   }, [selectedNodeId, nodes]);
 
-  // Fast lookup for highlighted node IDs (by internal ID or property ID)
+  // Fast lookup for highlighted node IDs
   const highlightedNodeLookup = useMemo(() => {
     const set = new Set<string>();
     highlightedNodeIds.forEach((id) => set.add(String(id)));
     nodes.forEach((n) => {
-      const propId = String((n.properties as Record<string, string>)?.id || '');
+      const propId = String((n.properties as Record<string, string>)?.id || "");
       if (set.has(propId) || set.has(String(n.id))) {
         set.add(String(n.id));
         if (propId) set.add(propId);
@@ -249,13 +361,6 @@ export default function CognitiveGraphCanvas({
     });
     return set;
   }, [highlightedNodeIds, nodes]);
-
-  // Handle node selection
-  const handleNodeClick = (node: GraphNode, e: React.MouseEvent) => {
-    e.stopPropagation();
-    setInspectedNode(node);
-    onSelectNode?.(node);
-  };
 
   // Node position helper
   const getNodePos = useCallback(
@@ -265,38 +370,89 @@ export default function CognitiveGraphCanvas({
     [nodePositions]
   );
 
-  // Mouse handlers for Pan
-  const handleMouseDown = (e: React.MouseEvent) => {
-    if (e.target === containerRef.current || (e.target as HTMLElement).tagName === 'svg') {
-      setIsPanning(true);
-      setPanStart({ x: e.clientX - pan.x, y: e.clientY - pan.y });
+  // 1:1 Precision Node Dragging Handlers
+  const handleNodeMouseDown = (node: GraphNode, e: React.MouseEvent) => {
+    e.stopPropagation();
+    const svgPt = clientToSvgPoint(e.clientX, e.clientY);
+    const pos = getNodePos(node.id);
+    const cursorNodeX = (svgPt.x - pan.x) / zoom;
+    const cursorNodeY = (svgPt.y - pan.y) / zoom;
+
+    setDraggingNodeId(node.id);
+    dragOffsetRef.current = {
+      x: cursorNodeX - pos.x,
+      y: cursorNodeY - pos.y,
+    };
+    dragStartPosRef.current = { x: e.clientX, y: e.clientY };
+    hasDraggedRef.current = false;
+  };
+
+  // Node Click: distinguished from drag (< 5px movement)
+  const handleNodeClick = (node: GraphNode, e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (!hasDraggedRef.current) {
+      setInspectedNode(node);
+      onSelectNode?.(node);
     }
   };
 
-  const handleMouseMove = (e: React.MouseEvent) => {
-    if (isPanning) {
-      setPan({ x: e.clientX - panStart.x, y: e.clientY - panStart.y });
-    } else if (draggingNodeId !== null) {
-      const rect = containerRef.current?.getBoundingClientRect();
-      if (!rect) return;
-      const x = (e.clientX - rect.left - pan.x) / zoom;
-      const y = (e.clientY - rect.top - pan.y) / zoom;
+  // Canvas Mouse Down: Starts canvas panning on empty background
+  const handleCanvasMouseDown = (e: React.MouseEvent) => {
+    setIsPanning(true);
+    panStartRef.current = {
+      clientX: e.clientX,
+      clientY: e.clientY,
+      panX: pan.x,
+      panY: pan.y,
+    };
+  };
+
+  // Canvas Mouse Move: Handles node dragging or smooth canvas panning
+  const handleCanvasMouseMove = (e: React.MouseEvent) => {
+    if (draggingNodeId !== null) {
+      const dist = Math.hypot(
+        e.clientX - dragStartPosRef.current.x,
+        e.clientY - dragStartPosRef.current.y
+      );
+      if (dist >= 5) {
+        hasDraggedRef.current = true;
+      }
+      const svgPt = clientToSvgPoint(e.clientX, e.clientY);
+      const cursorNodeX = (svgPt.x - pan.x) / zoom;
+      const cursorNodeY = (svgPt.y - pan.y) / zoom;
+      const newX = cursorNodeX - dragOffsetRef.current.x;
+      const newY = cursorNodeY - dragOffsetRef.current.y;
+
       setNodePositions((prev) => ({
         ...prev,
-        [draggingNodeId]: { x, y },
+        [draggingNodeId]: { x: newX, y: newY },
       }));
+    } else if (isPanning) {
+      const dx = e.clientX - panStartRef.current.clientX;
+      const dy = e.clientY - panStartRef.current.clientY;
+      setPan({
+        x: panStartRef.current.panX + dx,
+        y: panStartRef.current.panY + dy,
+      });
     }
   };
 
-  const handleMouseUp = () => {
+  const handleCanvasMouseUp = () => {
     setIsPanning(false);
     setDraggingNodeId(null);
   };
 
-  // Filtered nodes based on active layers, compact mode, and active path mode
+  // Mouse Wheel Smooth Zoom (Clamped 0.45 - 2.5)
+  const handleWheel = (e: React.WheelEvent) => {
+    e.preventDefault();
+    const zoomFactor = e.deltaY < 0 ? 1.08 : 0.92;
+    setZoom((z) => Math.min(2.5, Math.max(0.45, z * zoomFactor)));
+  };
+
+  // Filtered nodes
   const visibleNodes = useMemo(() => {
     return nodes.filter((n) => {
-      if (hideGranularNodes && (n.labels.includes('Turn') || n.labels.includes('Step'))) {
+      if (hideGranularNodes && (n.labels.includes("Turn") || n.labels.includes("Step"))) {
         return false;
       }
 
@@ -305,16 +461,19 @@ export default function CognitiveGraphCanvas({
 
       if (showActivePathOnly && highlightedNodeIds.length > 0) {
         const idStr = String(n.id);
-        const propId = String((n.properties as Record<string, string>).id || '');
+        const propId = String((n.properties as Record<string, string>).id || "");
         return highlightedNodeIds.includes(idStr) || highlightedNodeIds.includes(propId);
       }
       return true;
     });
   }, [nodes, activeLayers, showActivePathOnly, highlightedNodeIds, hideGranularNodes]);
 
-  const visibleNodeIds = useMemo(() => new Set(visibleNodes.map((n) => String(n.id))), [visibleNodes]);
+  const visibleNodeIds = useMemo(
+    () => new Set(visibleNodes.map((n) => String(n.id))),
+    [visibleNodes]
+  );
 
-  // Filtered edges connecting visible nodes
+  // Filtered edges
   const visibleEdges = useMemo(() => {
     return edges.filter((e) => {
       return visibleNodeIds.has(String(e.source)) && visibleNodeIds.has(String(e.target));
@@ -324,22 +483,26 @@ export default function CognitiveGraphCanvas({
   return (
     <div
       ref={containerRef}
-      onMouseDown={handleMouseDown}
-      onMouseMove={handleMouseMove}
-      onMouseUp={handleMouseUp}
-      className={`card relative overflow-hidden select-none bg-[var(--bg-primary)] border-[var(--border-dim)] ${className}`}
-      style={{ minHeight: '540px', cursor: isPanning ? 'grabbing' : 'default' }}
+      className={
+        isFullscreen
+          ? "fixed inset-0 z-[100] w-screen h-screen bg-[#07090e] flex flex-col select-none overflow-hidden"
+          : `card relative overflow-hidden select-none bg-[#080a0f] border border-[#1c202b] ${className}`
+      }
+      style={{
+        minHeight: isFullscreen ? "100vh" : "540px",
+        cursor: isPanning ? "grabbing" : draggingNodeId !== null ? "grabbing" : "default",
+      }}
     >
       {/* ═══ Floating Controls Toolbar ═══ */}
       <div className="absolute top-3 left-3 z-20 flex flex-wrap items-center gap-1.5 bg-[#0c0e14]/90 backdrop-blur-md p-1 rounded-md border border-[#1c202b] shadow-lg text-xs font-mono">
         {/* Layer Filters */}
-        <span className="text-[10px] text-zinc-500 uppercase tracking-wider px-1">
-          Layers:
-        </span>
+        <span className="text-[10px] text-zinc-500 uppercase tracking-wider px-1">Layers:</span>
         <button
           onClick={() => setActiveLayers((p) => ({ ...p, semantic: !p.semantic }))}
           className={`px-2 py-0.5 rounded text-[10px] transition-colors cursor-pointer ${
-            activeLayers.semantic ? 'bg-[#1c2233] text-cyan-300 border border-[#2d374d]' : 'text-zinc-500 hover:text-zinc-300 border border-transparent'
+            activeLayers.semantic
+              ? "bg-[#1c2233] text-cyan-300 border border-[#2d374d]"
+              : "text-zinc-500 hover:text-zinc-300 border border-transparent"
           }`}
         >
           Semantic
@@ -347,7 +510,9 @@ export default function CognitiveGraphCanvas({
         <button
           onClick={() => setActiveLayers((p) => ({ ...p, episodic: !p.episodic }))}
           className={`px-2 py-0.5 rounded text-[10px] transition-colors cursor-pointer ${
-            activeLayers.episodic ? 'bg-[#1c2233] text-purple-300 border border-[#2d374d]' : 'text-zinc-500 hover:text-zinc-300 border border-transparent'
+            activeLayers.episodic
+              ? "bg-[#1c2233] text-purple-300 border border-[#2d374d]"
+              : "text-zinc-500 hover:text-zinc-300 border border-transparent"
           }`}
         >
           Episodic
@@ -355,7 +520,9 @@ export default function CognitiveGraphCanvas({
         <button
           onClick={() => setActiveLayers((p) => ({ ...p, procedural: !p.procedural }))}
           className={`px-2 py-0.5 rounded text-[10px] transition-colors cursor-pointer ${
-            activeLayers.procedural ? 'bg-[#1c2233] text-emerald-300 border border-[#2d374d]' : 'text-zinc-500 hover:text-zinc-300 border border-transparent'
+            activeLayers.procedural
+              ? "bg-[#1c2233] text-emerald-300 border border-[#2d374d]"
+              : "text-zinc-500 hover:text-zinc-300 border border-transparent"
           }`}
         >
           Procedural
@@ -363,7 +530,9 @@ export default function CognitiveGraphCanvas({
         <button
           onClick={() => setActiveLayers((p) => ({ ...p, coordination: !p.coordination }))}
           className={`px-2 py-0.5 rounded text-[10px] transition-colors cursor-pointer ${
-            activeLayers.coordination ? 'bg-[#1c2233] text-amber-300 border border-[#2d374d]' : 'text-zinc-500 hover:text-zinc-300 border border-transparent'
+            activeLayers.coordination
+              ? "bg-[#1c2233] text-amber-300 border border-[#2d374d]"
+              : "text-zinc-500 hover:text-zinc-300 border border-transparent"
           }`}
         >
           Agents
@@ -376,13 +545,13 @@ export default function CognitiveGraphCanvas({
           onClick={() => setHideGranularNodes((prev) => !prev)}
           className={`px-2 py-0.5 rounded text-[10px] transition-all flex items-center gap-1 border cursor-pointer ${
             hideGranularNodes
-              ? 'bg-[#141824] text-zinc-200 border-[#242a38]'
-              : 'text-zinc-500 border-transparent hover:text-zinc-300'
+              ? "bg-[#141824] text-zinc-200 border-[#242a38]"
+              : "text-zinc-500 border-transparent hover:text-zinc-300"
           }`}
           title="Filter out :Turn and :Step nodes for clean primary topology"
         >
           <Layers className="w-3 h-3 text-cyan-400" />
-          {hideGranularNodes ? 'Compact Topology' : 'All Nodes'}
+          {hideGranularNodes ? "Compact Topology" : "All Nodes"}
         </button>
 
         <div className="h-3.5 w-px bg-[#1c202b] mx-1" />
@@ -392,48 +561,81 @@ export default function CognitiveGraphCanvas({
           onClick={() => setShowActivePathOnly((prev) => !prev)}
           className={`px-2 py-0.5 rounded text-[10px] transition-all flex items-center gap-1 border cursor-pointer ${
             showActivePathOnly
-              ? 'bg-[#1c2233] text-zinc-100 border-[#2d374d]'
-              : 'text-zinc-500 border-transparent hover:text-zinc-300'
+              ? "bg-[#1c2233] text-zinc-100 border-[#2d374d]"
+              : "text-zinc-500 border-transparent hover:text-zinc-300"
           }`}
           title="Filter to nodes activated in the most recent swarm incident"
         >
           <Sparkles className="w-3 h-3 text-amber-400" />
-          {showActivePathOnly ? 'Reasoning Subgraph' : 'Full Graph'}
+          {showActivePathOnly ? "Reasoning Subgraph" : "Full Graph"}
         </button>
       </div>
 
-      {/* ═══ Zoom / Pan Controls ═══ */}
-      <div className="absolute top-3 right-3 z-20 flex items-center gap-1 bg-[#0c0e14]/90 backdrop-blur-md p-1 rounded-md border border-[#1c202b] shadow-lg">
+      {/* ═══ Zoom / Pan / Fullscreen Controls Toolbar ═══ */}
+      <div className="absolute top-3 right-3 z-20 flex items-center gap-1 bg-[#0c0e14]/90 backdrop-blur-md p-1 rounded-md border border-[#1c202b] shadow-lg text-xs font-mono">
+        {/* 1. Zoom In */}
         <button
-          onClick={() => setZoom((z) => Math.min(z + 0.15, 2.5))}
+          onClick={() => setZoom((z) => Math.min(2.5, z + 0.15))}
           className="p-1 hover:bg-[#141824] rounded text-zinc-400 hover:text-zinc-200 cursor-pointer"
-          title="Zoom In"
+          title="Zoom In (+)"
         >
           <ZoomIn className="w-3.5 h-3.5" />
         </button>
+
+        {/* 2. Zoom Out */}
         <button
-          onClick={() => setZoom((z) => Math.max(z - 0.15, 0.4))}
+          onClick={() => setZoom((z) => Math.max(0.45, z - 0.15))}
           className="p-1 hover:bg-[#141824] rounded text-zinc-400 hover:text-zinc-200 cursor-pointer"
-          title="Zoom Out"
+          title="Zoom Out (-)"
         >
           <ZoomOut className="w-3.5 h-3.5" />
         </button>
+
+        {/* 3. Reset View / Re-Layout */}
         <button
-          onClick={() => {
-            setZoom(1);
-            setPan({ x: 0, y: 0 });
-          }}
+          onClick={handleResetView}
           className="p-1 hover:bg-[#141824] rounded text-zinc-400 hover:text-zinc-200 cursor-pointer"
-          title="Reset View"
+          title="Reset View / Re-Layout"
         >
-          <Maximize2 className="w-3.5 h-3.5" />
+          <RotateCcw className="w-3.5 h-3.5" />
+        </button>
+
+        <div className="h-3.5 w-px bg-[#1c202b] mx-0.5" />
+
+        {/* 4. Toggle Fullscreen */}
+        <button
+          onClick={toggleFullscreen}
+          className="px-2 py-0.5 hover:bg-[#141824] rounded text-zinc-400 hover:text-zinc-100 cursor-pointer flex items-center gap-1.5 transition-colors border border-transparent hover:border-[#242a38]"
+          title={isFullscreen ? "Exit Fullscreen (Esc)" : "Full Screen (100vw x 100vh)"}
+        >
+          {isFullscreen ? (
+            <>
+              <Minimize2 className="w-3.5 h-3.5 text-blue-400" />
+              <span className="text-[10px] font-mono font-medium">Exit</span>
+            </>
+          ) : (
+            <>
+              <Maximize2 className="w-3.5 h-3.5" />
+              <span className="text-[10px] font-mono font-medium">Fullscreen</span>
+            </>
+          )}
         </button>
       </div>
 
       {/* ═══ Interactive SVG Canvas ═══ */}
       <svg
-        className="w-full h-full absolute inset-0 cursor-grab"
-        style={{ width: '100%', height: '100%', minHeight: '540px' }}
+        ref={svgRef}
+        onMouseDown={handleCanvasMouseDown}
+        onMouseMove={handleCanvasMouseMove}
+        onMouseUp={handleCanvasMouseUp}
+        onMouseLeave={handleCanvasMouseUp}
+        onWheel={handleWheel}
+        className="w-full h-full absolute inset-0"
+        style={{
+          width: "100%",
+          height: "100%",
+          cursor: isPanning ? "grabbing" : draggingNodeId !== null ? "grabbing" : "grab",
+        }}
       >
         <defs>
           {/* Arrow markers */}
@@ -476,8 +678,8 @@ export default function CognitiveGraphCanvas({
               (highlightedNodeLookup.size > 0 &&
                 highlightedNodeLookup.has(String(edge.source)) &&
                 highlightedNodeLookup.has(String(edge.target))) ||
-              edge.type === 'LED_TO_RESOLUTION' ||
-              edge.type === 'HANDED_OFF_TO';
+              edge.type === "LED_TO_RESOLUTION" ||
+              edge.type === "HANDED_OFF_TO";
 
             const isEdgeHovered = hoveredEdgeId === edge.id;
             const showLabel = isReasoningEdge || isEdgeHovered;
@@ -503,15 +705,27 @@ export default function CognitiveGraphCanvas({
                   y1={srcPos.y}
                   x2={tgtPos.x}
                   y2={tgtPos.y}
-                  stroke={isEdgeHovered ? '#38bdf8' : isReasoningEdge ? '#22d3ee' : 'rgba(76, 105, 145, 0.35)'}
+                  stroke={
+                    isEdgeHovered
+                      ? "#38bdf8"
+                      : isReasoningEdge
+                      ? "#22d3ee"
+                      : "rgba(76, 105, 145, 0.35)"
+                  }
                   strokeWidth={isEdgeHovered ? 2.8 : isReasoningEdge ? 2.5 : 1.2}
-                  strokeDasharray={edge.type === 'HANDED_OFF_TO' ? '4 3' : undefined}
-                  markerEnd={isReasoningEdge || isEdgeHovered ? 'url(#arrow-active)' : 'url(#arrow)'}
+                  strokeDasharray={edge.type === "HANDED_OFF_TO" ? "4 3" : undefined}
+                  markerEnd={
+                    isReasoningEdge || isEdgeHovered ? "url(#arrow-active)" : "url(#arrow)"
+                  }
                 />
 
                 {/* Animated Data Packets flowing along reasoning & handoff edges */}
                 {isReasoningEdge && (
-                  <circle r="3.5" fill="#22d3ee" className="pointer-events-none drop-shadow-[0_0_6px_#22d3ee]">
+                  <circle
+                    r="3.5"
+                    fill="#22d3ee"
+                    className="pointer-events-none drop-shadow-[0_0_6px_#22d3ee]"
+                  >
                     <animateMotion
                       path={`M ${srcPos.x} ${srcPos.y} L ${tgtPos.x} ${tgtPos.y}`}
                       dur="2s"
@@ -519,8 +733,12 @@ export default function CognitiveGraphCanvas({
                     />
                   </circle>
                 )}
-                {edge.type === 'HANDED_OFF_TO' && (
-                  <circle r="3.5" fill="#f59e0b" className="pointer-events-none drop-shadow-[0_0_6px_#f59e0b]">
+                {edge.type === "HANDED_OFF_TO" && (
+                  <circle
+                    r="3.5"
+                    fill="#f59e0b"
+                    className="pointer-events-none drop-shadow-[0_0_6px_#f59e0b]"
+                  >
                     <animateMotion
                       path={`M ${srcPos.x} ${srcPos.y} L ${tgtPos.x} ${tgtPos.y}`}
                       dur="1.5s"
@@ -529,18 +747,24 @@ export default function CognitiveGraphCanvas({
                   </circle>
                 )}
 
-                {/* Edge Type Label - only rendered for active reasoning path, handoff/resolution, or on hover */}
+                {/* Edge Type Label */}
                 {showLabel && (
                   <text
                     x={(srcPos.x + tgtPos.x) / 2}
                     y={(srcPos.y + tgtPos.y) / 2 - 4}
-                    fill={isEdgeHovered ? '#38bdf8' : isReasoningEdge ? '#67e8f9' : 'rgba(148, 163, 184, 0.85)'}
+                    fill={
+                      isEdgeHovered
+                        ? "#38bdf8"
+                        : isReasoningEdge
+                        ? "#67e8f9"
+                        : "rgba(148, 163, 184, 0.85)"
+                    }
                     fontSize="9"
                     textAnchor="middle"
                     fontFamily="monospace"
                     className="pointer-events-none select-none font-semibold"
                   >
-                    {edge.type === 'LED_TO_RESOLUTION' && edge.properties?.confidence_weight
+                    {edge.type === "LED_TO_RESOLUTION" && edge.properties?.confidence_weight
                       ? `${edge.type} (${edge.properties.confidence_weight})`
                       : edge.type}
                   </text>
@@ -549,17 +773,20 @@ export default function CognitiveGraphCanvas({
             );
           })}
 
-          {/* Nodes */}
+          {/* Nodes (with 1:1 precision dragging & click-to-inspect) */}
           {visibleNodes.map((node) => {
             const pos = getNodePos(node.id);
             const radius = getNodeRadius(node.labels);
             const isHighlighted =
               highlightedNodeIds.includes(String(node.id)) ||
-              highlightedNodeIds.includes(String((node.properties as Record<string, string>).id || ''));
+              highlightedNodeIds.includes(
+                String((node.properties as Record<string, string>).id || "")
+              );
             const isDimmed = showActivePathOnly && !isHighlighted;
             const isSelected =
               inspectedNode?.id === node.id ||
-              String((inspectedNode?.properties as Record<string, string>)?.id) === String(node.id);
+              String((inspectedNode?.properties as Record<string, string>)?.id) ===
+                String(node.id);
             const color = getNodeColor(node.labels, isHighlighted, isDimmed);
 
             const labelText =
@@ -571,12 +798,12 @@ export default function CognitiveGraphCanvas({
               <g
                 key={node.id}
                 transform={`translate(${pos.x}, ${pos.y})`}
+                onMouseDown={(e) => handleNodeMouseDown(node, e)}
                 onClick={(e) => handleNodeClick(node, e)}
-                onMouseDown={(e) => {
-                  e.stopPropagation();
-                  setDraggingNodeId(node.id);
+                style={{
+                  cursor: draggingNodeId === node.id ? "grabbing" : "grab",
                 }}
-                className="cursor-pointer group"
+                className="group select-none"
               >
                 {/* Outer Glow for Highlighted Active Path */}
                 {isHighlighted && (
@@ -605,10 +832,16 @@ export default function CognitiveGraphCanvas({
                 <circle
                   r={radius}
                   fill={color}
-                  stroke={isSelected ? '#ffffff' : isHighlighted ? '#ffffff' : 'rgba(255, 255, 255, 0.2)'}
+                  stroke={
+                    isSelected
+                      ? "#ffffff"
+                      : isHighlighted
+                      ? "#ffffff"
+                      : "rgba(255, 255, 255, 0.2)"
+                  }
                   strokeWidth={isHighlighted ? 2.5 : 1.5}
-                  filter={isHighlighted ? 'url(#glow-cyan)' : undefined}
-                  className="transition-transform duration-200 group-hover:scale-110"
+                  filter={isHighlighted ? "url(#glow-cyan)" : undefined}
+                  className="transition-transform duration-150 group-hover:scale-110"
                 />
 
                 {/* Node Inner Label / Icon text */}
@@ -628,14 +861,16 @@ export default function CognitiveGraphCanvas({
                 <text
                   dy={radius + 13}
                   textAnchor="middle"
-                  fill={isDimmed ? '#475569' : '#e2e8f0'}
+                  fill={isDimmed ? "#475569" : "#e2e8f0"}
                   fontSize="10"
                   fontFamily="monospace"
                   fontWeight="500"
                   pointerEvents="none"
                   className="select-none"
                 >
-                  {String(labelText).length > 16 ? `${String(labelText).slice(0, 14)}…` : String(labelText)}
+                  {String(labelText).length > 16
+                    ? `${String(labelText).slice(0, 14)}…`
+                    : String(labelText)}
                 </text>
               </g>
             );
@@ -651,7 +886,7 @@ export default function CognitiveGraphCanvas({
             <div className="flex items-center justify-between pb-2 mb-2.5 border-b border-[#1c202b]">
               <div className="flex items-center gap-2 truncate">
                 <span className="text-[10px] font-mono text-zinc-400 bg-zinc-900 border border-zinc-800 px-1.5 py-0.2 rounded">
-                  {inspectedNode.labels.join(' : ')}
+                  {inspectedNode.labels.join(" : ")}
                 </span>
                 <span className="text-[10px] text-zinc-500 font-mono">
                   #{inspectedNode.id}
@@ -675,7 +910,7 @@ export default function CognitiveGraphCanvas({
             </h4>
 
             {/* If node is a Service, offer 1-click simulate incident */}
-            {inspectedNode.labels.includes('Service') && onSimulateIncident && (
+            {inspectedNode.labels.includes("Service") && onSimulateIncident && (
               <button
                 onClick={() => {
                   const sId = String(
@@ -705,7 +940,7 @@ export default function CognitiveGraphCanvas({
                 >
                   <span className="text-zinc-500">{k}: </span>
                   <span className="text-zinc-200 font-medium whitespace-pre-wrap break-all">
-                    {typeof v === 'object' ? JSON.stringify(v) : String(v)}
+                    {typeof v === "object" ? JSON.stringify(v) : String(v)}
                   </span>
                 </div>
               ))}
