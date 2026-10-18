@@ -6,7 +6,7 @@
 
 ## 🎬 2.5-Minute Hackathon Demo Video Script
 
-Use this exact timing and talking points during your screen recording on `http://localhost:3001`.
+
 
 ### ⏱️ 0:00 – 0:30 · Hook & The Critical Rule 3 Foundation
 - **Visual**: Start on the SynapseOps SRE Command Center. Point to the header showing `FalkorDB: synapse_tenant_acme-fintech`.
