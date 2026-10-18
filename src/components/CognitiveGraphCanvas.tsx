@@ -32,6 +32,7 @@ import {
   Workflow,
   Shield,
   ArrowRight,
+  Flame,
 } from 'lucide-react';
 
 export interface GraphNode {
@@ -58,6 +59,7 @@ interface CognitiveGraphCanvasProps {
   onSelectNode?: (node: GraphNode | null) => void;
   selectedNodeId?: string | number | null;
   className?: string;
+  onSimulateIncident?: (serviceId: string, serviceName: string) => void;
 }
 
 // ─── Layer Color Helpers ───────────────────────────────────────────────────
@@ -101,6 +103,7 @@ export default function CognitiveGraphCanvas({
   onSelectNode,
   selectedNodeId,
   className = '',
+  onSimulateIncident,
 }: CognitiveGraphCanvasProps) {
   const containerRef = useRef<HTMLDivElement>(null);
 
@@ -116,6 +119,8 @@ export default function CognitiveGraphCanvas({
 
   // Filters & Modes
   const [showActivePathOnly, setShowActivePathOnly] = useState(false);
+  const [hideGranularNodes, setHideGranularNodes] = useState(true);
+  const [hoveredEdgeId, setHoveredEdgeId] = useState<string | number | null>(null);
   const [activeLayers, setActiveLayers] = useState<Record<string, boolean>>({
     semantic: true,
     episodic: true,
@@ -130,60 +135,94 @@ export default function CognitiveGraphCanvas({
   useEffect(() => {
     if (nodes.length === 0) return;
 
-    const width = 860;
-    const height = 540;
+    const width = 880;
+    const height = 560;
     const centerX = width / 2;
     const centerY = height / 2;
+    const paddingX = 95;
 
     const newPositions: Record<string | number, { x: number; y: number }> = {};
 
-    // Group by layer for concentric ring layout
-    const semanticNodes = nodes.filter((n) => getNodeLayer(n.labels) === 'semantic');
-    const episodicNodes = nodes.filter((n) => getNodeLayer(n.labels) === 'episodic');
-    const proceduralNodes = nodes.filter((n) => getNodeLayer(n.labels) === 'procedural');
-    const coordNodes = nodes.filter((n) => getNodeLayer(n.labels) === 'coordination');
+    const layoutNodes = hideGranularNodes
+      ? nodes.filter((n) => !n.labels.includes('Turn') && !n.labels.includes('Step'))
+      : nodes;
 
-    // Ring 1: Semantic (Center-Left)
+    // Group by layer for concentric ring layout
+    const semanticNodes = layoutNodes.filter((n) => getNodeLayer(n.labels) === 'semantic');
+    const episodicNodes = layoutNodes.filter((n) => getNodeLayer(n.labels) === 'episodic');
+    const proceduralNodes = layoutNodes.filter((n) => getNodeLayer(n.labels) === 'procedural');
+    const coordNodes = layoutNodes.filter((n) => getNodeLayer(n.labels) === 'coordination');
+
+    // Ring 1: Semantic (Center-Left) with staggered Y-offsets
     semanticNodes.forEach((node, i) => {
       const angle = (i / Math.max(semanticNodes.length, 1)) * Math.PI * 2;
-      const radius = 130;
+      const radius = 125;
+      const yOffset = i % 2 === 0 ? -24 : 24;
+      const rawX = centerX - 150 + Math.cos(angle) * radius;
+      const rawY = centerY + 10 + Math.sin(angle) * (radius * 0.78) + yOffset;
       newPositions[node.id] = {
-        x: centerX - 140 + Math.cos(angle) * radius,
-        y: centerY + Math.sin(angle) * (radius * 0.8),
+        x: Math.max(paddingX, Math.min(width - paddingX, rawX)),
+        y: Math.max(45, Math.min(height - 45, rawY)),
       };
     });
 
-    // Ring 2: Procedural (Center-Right)
+    // Ring 2: Procedural (Center-Right) with staggered Y-offsets
     proceduralNodes.forEach((node, i) => {
       const angle = (i / Math.max(proceduralNodes.length, 1)) * Math.PI * 2;
-      const radius = 150;
+      const radius = 140;
+      const yOffset = i % 2 === 0 ? -24 : 24;
+      const rawX = centerX + 165 + Math.cos(angle) * radius;
+      const rawY = centerY + 10 + Math.sin(angle) * (radius * 0.82) + yOffset;
       newPositions[node.id] = {
-        x: centerX + 180 + Math.cos(angle) * radius,
-        y: centerY + Math.sin(angle) * (radius * 0.85),
+        x: Math.max(paddingX, Math.min(width - paddingX, rawX)),
+        y: Math.max(45, Math.min(height - 45, rawY)),
       };
     });
 
-    // Ring 3: Episodic (Bottom Arc)
+    // Ring 3: Episodic (Bottom Arc) with staggered Y-offsets
     episodicNodes.forEach((node, i) => {
-      const angle = Math.PI * 0.2 + (i / Math.max(episodicNodes.length, 1)) * Math.PI * 0.6;
-      const radius = 220;
+      const count = Math.max(episodicNodes.length, 1);
+      const angle = Math.PI * 0.2 + (i / count) * Math.PI * 0.6;
+      const radius = 215;
+      const yOffset = i % 2 === 0 ? -24 : 24;
+      const rawX = centerX + Math.cos(angle) * radius * 1.25;
+      const rawY = centerY + Math.sin(angle) * radius * 0.8 + 40 + yOffset;
       newPositions[node.id] = {
-        x: centerX + Math.cos(angle) * radius * 1.3,
-        y: centerY + Math.sin(angle) * radius * 0.85 + 30,
+        x: Math.max(paddingX, Math.min(width - paddingX, rawX)),
+        y: Math.max(50, Math.min(height - 40, rawY)),
       };
     });
 
-    // Coordination (Top Arc)
+    // Coordination (Top Arc) - Generous horizontal spacing and safe margins
     coordNodes.forEach((node, i) => {
-      const xSpread = 160;
+      const count = coordNodes.length;
+      const usableWidth = width - paddingX * 2;
+      const rawX = count <= 1
+        ? centerX
+        : paddingX + 35 + (i / (count - 1)) * (usableWidth - 70);
+      const yOffset = i % 2 === 0 ? -24 : 24;
       newPositions[node.id] = {
-        x: centerX + (i - (coordNodes.length - 1) / 2) * xSpread,
-        y: 60 + (i % 2) * 40,
+        x: Math.max(paddingX, Math.min(width - paddingX, rawX)),
+        y: 74 + yOffset,
       };
     });
+
+    // Fallback placement for granular nodes when compact mode is toggled off
+    if (!hideGranularNodes) {
+      const granularNodes = nodes.filter((n) => n.labels.includes('Turn') || n.labels.includes('Step'));
+      granularNodes.forEach((node, i) => {
+        if (!newPositions[node.id]) {
+          const angle = (i / Math.max(granularNodes.length, 1)) * Math.PI * 2;
+          newPositions[node.id] = {
+            x: Math.max(paddingX, Math.min(width - paddingX, centerX + Math.cos(angle) * 195)),
+            y: Math.max(45, Math.min(height - 45, centerY + Math.sin(angle) * 175)),
+          };
+        }
+      });
+    }
 
     setNodePositions(newPositions);
-  }, [nodes]);
+  }, [nodes, hideGranularNodes]);
 
   // Sync selectedNodeId prop with inspectedNode
   useEffect(() => {
@@ -196,6 +235,20 @@ export default function CognitiveGraphCanvas({
       if (found) setInspectedNode(found);
     }
   }, [selectedNodeId, nodes]);
+
+  // Fast lookup for highlighted node IDs (by internal ID or property ID)
+  const highlightedNodeLookup = useMemo(() => {
+    const set = new Set<string>();
+    highlightedNodeIds.forEach((id) => set.add(String(id)));
+    nodes.forEach((n) => {
+      const propId = String((n.properties as Record<string, string>)?.id || '');
+      if (set.has(propId) || set.has(String(n.id))) {
+        set.add(String(n.id));
+        if (propId) set.add(propId);
+      }
+    });
+    return set;
+  }, [highlightedNodeIds, nodes]);
 
   // Handle node selection
   const handleNodeClick = (node: GraphNode, e: React.MouseEvent) => {
@@ -240,9 +293,13 @@ export default function CognitiveGraphCanvas({
     setDraggingNodeId(null);
   };
 
-  // Filtered nodes based on active layers and active path mode
+  // Filtered nodes based on active layers, compact mode, and active path mode
   const visibleNodes = useMemo(() => {
     return nodes.filter((n) => {
+      if (hideGranularNodes && (n.labels.includes('Turn') || n.labels.includes('Step'))) {
+        return false;
+      }
+
       const layer = getNodeLayer(n.labels);
       if (!activeLayers[layer]) return false;
 
@@ -253,7 +310,7 @@ export default function CognitiveGraphCanvas({
       }
       return true;
     });
-  }, [nodes, activeLayers, showActivePathOnly, highlightedNodeIds]);
+  }, [nodes, activeLayers, showActivePathOnly, highlightedNodeIds, hideGranularNodes]);
 
   const visibleNodeIds = useMemo(() => new Set(visibleNodes.map((n) => String(n.id))), [visibleNodes]);
 
@@ -271,96 +328,112 @@ export default function CognitiveGraphCanvas({
       onMouseMove={handleMouseMove}
       onMouseUp={handleMouseUp}
       className={`card relative overflow-hidden select-none bg-[var(--bg-primary)] border-[var(--border-dim)] ${className}`}
-      style={{ minHeight: '520px', cursor: isPanning ? 'grabbing' : 'default' }}
+      style={{ minHeight: '540px', cursor: isPanning ? 'grabbing' : 'default' }}
     >
       {/* ═══ Floating Controls Toolbar ═══ */}
-      <div className="absolute top-3 left-3 z-20 flex flex-wrap items-center gap-1.5 bg-[var(--bg-card)]/90 backdrop-blur-md p-1.5 rounded-lg border border-[var(--border-dim)] shadow-lg text-xs">
+      <div className="absolute top-3 left-3 z-20 flex flex-wrap items-center gap-1.5 bg-[#0c0e14]/90 backdrop-blur-md p-1 rounded-md border border-[#1c202b] shadow-lg text-xs font-mono">
         {/* Layer Filters */}
-        <span className="text-[10px] text-[var(--text-muted)] font-semibold uppercase tracking-wider px-1">
+        <span className="text-[10px] text-zinc-500 uppercase tracking-wider px-1">
           Layers:
         </span>
         <button
           onClick={() => setActiveLayers((p) => ({ ...p, semantic: !p.semantic }))}
-          className={`px-2 py-0.5 rounded text-[11px] font-medium transition-colors ${
-            activeLayers.semantic ? 'bg-cyan-500/20 text-cyan-400 border border-cyan-500/40' : 'text-[var(--text-muted)]'
+          className={`px-2 py-0.5 rounded text-[10px] transition-colors cursor-pointer ${
+            activeLayers.semantic ? 'bg-[#1c2233] text-cyan-300 border border-[#2d374d]' : 'text-zinc-500 hover:text-zinc-300 border border-transparent'
           }`}
         >
           Semantic
         </button>
         <button
           onClick={() => setActiveLayers((p) => ({ ...p, episodic: !p.episodic }))}
-          className={`px-2 py-0.5 rounded text-[11px] font-medium transition-colors ${
-            activeLayers.episodic ? 'bg-purple-500/20 text-purple-400 border border-purple-500/40' : 'text-[var(--text-muted)]'
+          className={`px-2 py-0.5 rounded text-[10px] transition-colors cursor-pointer ${
+            activeLayers.episodic ? 'bg-[#1c2233] text-purple-300 border border-[#2d374d]' : 'text-zinc-500 hover:text-zinc-300 border border-transparent'
           }`}
         >
           Episodic
         </button>
         <button
           onClick={() => setActiveLayers((p) => ({ ...p, procedural: !p.procedural }))}
-          className={`px-2 py-0.5 rounded text-[11px] font-medium transition-colors ${
-            activeLayers.procedural ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/40' : 'text-[var(--text-muted)]'
+          className={`px-2 py-0.5 rounded text-[10px] transition-colors cursor-pointer ${
+            activeLayers.procedural ? 'bg-[#1c2233] text-emerald-300 border border-[#2d374d]' : 'text-zinc-500 hover:text-zinc-300 border border-transparent'
           }`}
         >
           Procedural
         </button>
         <button
           onClick={() => setActiveLayers((p) => ({ ...p, coordination: !p.coordination }))}
-          className={`px-2 py-0.5 rounded text-[11px] font-medium transition-colors ${
-            activeLayers.coordination ? 'bg-amber-500/20 text-amber-400 border border-amber-500/40' : 'text-[var(--text-muted)]'
+          className={`px-2 py-0.5 rounded text-[10px] transition-colors cursor-pointer ${
+            activeLayers.coordination ? 'bg-[#1c2233] text-amber-300 border border-[#2d374d]' : 'text-zinc-500 hover:text-zinc-300 border border-transparent'
           }`}
         >
           Agents
         </button>
 
-        <div className="h-4 w-px bg-[var(--border-dim)] mx-1" />
+        <div className="h-3.5 w-px bg-[#1c202b] mx-1" />
+
+        {/* Compact View Toggle */}
+        <button
+          onClick={() => setHideGranularNodes((prev) => !prev)}
+          className={`px-2 py-0.5 rounded text-[10px] transition-all flex items-center gap-1 border cursor-pointer ${
+            hideGranularNodes
+              ? 'bg-[#141824] text-zinc-200 border-[#242a38]'
+              : 'text-zinc-500 border-transparent hover:text-zinc-300'
+          }`}
+          title="Filter out :Turn and :Step nodes for clean primary topology"
+        >
+          <Layers className="w-3 h-3 text-cyan-400" />
+          {hideGranularNodes ? 'Compact Topology' : 'All Nodes'}
+        </button>
+
+        <div className="h-3.5 w-px bg-[#1c202b] mx-1" />
 
         {/* Active Path Toggle */}
         <button
           onClick={() => setShowActivePathOnly((prev) => !prev)}
-          className={`px-2.5 py-0.5 rounded text-[11px] font-semibold transition-all flex items-center gap-1 ${
+          className={`px-2 py-0.5 rounded text-[10px] transition-all flex items-center gap-1 border cursor-pointer ${
             showActivePathOnly
-              ? 'bg-[var(--accent-blue)] text-white shadow-sm'
-              : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)]'
+              ? 'bg-[#1c2233] text-zinc-100 border-[#2d374d]'
+              : 'text-zinc-500 border-transparent hover:text-zinc-300'
           }`}
           title="Filter to nodes activated in the most recent swarm incident"
         >
-          <Sparkles className="w-3 h-3 text-[var(--accent-amber)]" />
-          {showActivePathOnly ? 'Reasoning Path Only' : 'Full Tenant Graph'}
+          <Sparkles className="w-3 h-3 text-amber-400" />
+          {showActivePathOnly ? 'Reasoning Subgraph' : 'Full Graph'}
         </button>
       </div>
 
       {/* ═══ Zoom / Pan Controls ═══ */}
-      <div className="absolute top-3 right-3 z-20 flex items-center gap-1 bg-[var(--bg-card)]/90 backdrop-blur-md p-1 rounded-lg border border-[var(--border-dim)] shadow-lg">
+      <div className="absolute top-3 right-3 z-20 flex items-center gap-1 bg-[#0c0e14]/90 backdrop-blur-md p-1 rounded-md border border-[#1c202b] shadow-lg">
         <button
           onClick={() => setZoom((z) => Math.min(z + 0.15, 2.5))}
-          className="p-1.5 hover:bg-[var(--bg-elevated)] rounded text-[var(--text-secondary)]"
+          className="p-1 hover:bg-[#141824] rounded text-zinc-400 hover:text-zinc-200 cursor-pointer"
           title="Zoom In"
         >
-          <ZoomIn className="w-4 h-4" />
+          <ZoomIn className="w-3.5 h-3.5" />
         </button>
         <button
           onClick={() => setZoom((z) => Math.max(z - 0.15, 0.4))}
-          className="p-1.5 hover:bg-[var(--bg-elevated)] rounded text-[var(--text-secondary)]"
+          className="p-1 hover:bg-[#141824] rounded text-zinc-400 hover:text-zinc-200 cursor-pointer"
           title="Zoom Out"
         >
-          <ZoomOut className="w-4 h-4" />
+          <ZoomOut className="w-3.5 h-3.5" />
         </button>
         <button
           onClick={() => {
             setZoom(1);
             setPan({ x: 0, y: 0 });
           }}
-          className="p-1.5 hover:bg-[var(--bg-elevated)] rounded text-[var(--text-secondary)]"
+          className="p-1 hover:bg-[#141824] rounded text-zinc-400 hover:text-zinc-200 cursor-pointer"
           title="Reset View"
         >
-          <Maximize2 className="w-4 h-4" />
+          <Maximize2 className="w-3.5 h-3.5" />
         </button>
       </div>
 
       {/* ═══ Interactive SVG Canvas ═══ */}
       <svg
         className="w-full h-full absolute inset-0 cursor-grab"
-        style={{ width: '100%', height: '100%', minHeight: '520px' }}
+        style={{ width: '100%', height: '100%', minHeight: '540px' }}
       >
         <defs>
           {/* Arrow markers */}
@@ -399,30 +472,73 @@ export default function CognitiveGraphCanvas({
             const srcPos = getNodePos(edge.source);
             const tgtPos = getNodePos(edge.target);
 
-            const isEdgeHighlighted =
-              highlightedEdgeTypes.length > 0 && highlightedEdgeTypes.includes(edge.type);
+            const isReasoningEdge =
+              (highlightedNodeLookup.size > 0 &&
+                highlightedNodeLookup.has(String(edge.source)) &&
+                highlightedNodeLookup.has(String(edge.target))) ||
+              edge.type === 'LED_TO_RESOLUTION' ||
+              edge.type === 'HANDED_OFF_TO';
+
+            const isEdgeHovered = hoveredEdgeId === edge.id;
+            const showLabel = isReasoningEdge || isEdgeHovered;
 
             return (
-              <g key={edge.id} className="transition-opacity duration-300">
+              <g
+                key={edge.id}
+                className="transition-opacity duration-300 cursor-pointer"
+                onMouseEnter={() => setHoveredEdgeId(edge.id)}
+                onMouseLeave={() => setHoveredEdgeId(null)}
+              >
+                {/* Transparent hit area to make edge hovering comfortable */}
                 <line
                   x1={srcPos.x}
                   y1={srcPos.y}
                   x2={tgtPos.x}
                   y2={tgtPos.y}
-                  stroke={isEdgeHighlighted ? '#22d3ee' : 'rgba(76, 105, 145, 0.35)'}
-                  strokeWidth={isEdgeHighlighted ? 2.5 : 1.2}
-                  strokeDasharray={edge.type === 'HANDED_OFF_TO' ? '4 3' : undefined}
-                  markerEnd={isEdgeHighlighted ? 'url(#arrow-active)' : 'url(#arrow)'}
+                  stroke="transparent"
+                  strokeWidth={14}
                 />
-                {/* Edge Type Label */}
-                {(isEdgeHighlighted || edge.type === 'LED_TO_RESOLUTION' || edge.type === 'HANDED_OFF_TO') && (
+                <line
+                  x1={srcPos.x}
+                  y1={srcPos.y}
+                  x2={tgtPos.x}
+                  y2={tgtPos.y}
+                  stroke={isEdgeHovered ? '#38bdf8' : isReasoningEdge ? '#22d3ee' : 'rgba(76, 105, 145, 0.35)'}
+                  strokeWidth={isEdgeHovered ? 2.8 : isReasoningEdge ? 2.5 : 1.2}
+                  strokeDasharray={edge.type === 'HANDED_OFF_TO' ? '4 3' : undefined}
+                  markerEnd={isReasoningEdge || isEdgeHovered ? 'url(#arrow-active)' : 'url(#arrow)'}
+                />
+
+                {/* Animated Data Packets flowing along reasoning & handoff edges */}
+                {isReasoningEdge && (
+                  <circle r="3.5" fill="#22d3ee" className="pointer-events-none drop-shadow-[0_0_6px_#22d3ee]">
+                    <animateMotion
+                      path={`M ${srcPos.x} ${srcPos.y} L ${tgtPos.x} ${tgtPos.y}`}
+                      dur="2s"
+                      repeatCount="indefinite"
+                    />
+                  </circle>
+                )}
+                {edge.type === 'HANDED_OFF_TO' && (
+                  <circle r="3.5" fill="#f59e0b" className="pointer-events-none drop-shadow-[0_0_6px_#f59e0b]">
+                    <animateMotion
+                      path={`M ${srcPos.x} ${srcPos.y} L ${tgtPos.x} ${tgtPos.y}`}
+                      dur="1.5s"
+                      repeatCount="indefinite"
+                    />
+                  </circle>
+                )}
+
+                {/* Edge Type Label - only rendered for active reasoning path, handoff/resolution, or on hover */}
+                {showLabel && (
                   <text
                     x={(srcPos.x + tgtPos.x) / 2}
                     y={(srcPos.y + tgtPos.y) / 2 - 4}
-                    fill={isEdgeHighlighted ? '#67e8f9' : 'rgba(148, 163, 184, 0.7)'}
+                    fill={isEdgeHovered ? '#38bdf8' : isReasoningEdge ? '#67e8f9' : 'rgba(148, 163, 184, 0.85)'}
                     fontSize="9"
                     textAnchor="middle"
                     fontFamily="monospace"
+                    className="pointer-events-none select-none font-semibold"
                   >
                     {edge.type === 'LED_TO_RESOLUTION' && edge.properties?.confidence_weight
                       ? `${edge.type} (${edge.properties.confidence_weight})`
@@ -527,30 +643,30 @@ export default function CognitiveGraphCanvas({
         </g>
       </svg>
 
-      {/* ═══ FalkorDB Node Inspector Side Drawer ═══ */}
+      {/* ═══ FalkorDB Node & Edge Inspector Side Drawer ═══ */}
       {inspectedNode && (
-        <div className="absolute top-3 right-3 bottom-3 w-80 bg-[var(--bg-card)]/95 backdrop-blur-md rounded-xl border border-[var(--border-subtle)] p-4 shadow-2xl z-30 flex flex-col justify-between animate-slide-down text-xs">
+        <div className="absolute top-3 right-3 bottom-3 w-80 bg-[#0c0e14]/95 backdrop-blur-md rounded-md border border-[#1c202b] p-3.5 shadow-2xl z-30 flex flex-col justify-between animate-slide-down text-xs">
           <div>
             {/* Header */}
-            <div className="flex items-center justify-between pb-2 mb-3 border-b border-[var(--border-dim)]">
+            <div className="flex items-center justify-between pb-2 mb-2.5 border-b border-[#1c202b]">
               <div className="flex items-center gap-2 truncate">
-                <span className="badge badge-blue text-[10px] py-0 px-2">
+                <span className="text-[10px] font-mono text-zinc-400 bg-zinc-900 border border-zinc-800 px-1.5 py-0.2 rounded">
                   {inspectedNode.labels.join(' : ')}
                 </span>
-                <span className="text-[10px] text-[var(--text-muted)] font-mono">
+                <span className="text-[10px] text-zinc-500 font-mono">
                   #{inspectedNode.id}
                 </span>
               </div>
               <button
                 onClick={() => setInspectedNode(null)}
-                className="text-[var(--text-muted)] hover:text-[var(--text-primary)]"
+                className="text-zinc-500 hover:text-zinc-200 cursor-pointer"
               >
-                <X className="w-4 h-4" />
+                <X className="w-3.5 h-3.5" />
               </button>
             </div>
 
             {/* Title / Name */}
-            <h4 className="text-sm font-bold text-[var(--text-primary)] font-mono mb-2">
+            <h4 className="text-xs font-semibold text-zinc-100 font-mono mb-2">
               {String(
                 (inspectedNode.properties as Record<string, string>).name ||
                   (inspectedNode.properties as Record<string, string>).id ||
@@ -558,18 +674,37 @@ export default function CognitiveGraphCanvas({
               )}
             </h4>
 
+            {/* If node is a Service, offer 1-click simulate incident */}
+            {inspectedNode.labels.includes('Service') && onSimulateIncident && (
+              <button
+                onClick={() => {
+                  const sId = String(
+                    (inspectedNode.properties as Record<string, string>).id || inspectedNode.id
+                  );
+                  const sName = String(
+                    (inspectedNode.properties as Record<string, string>).name || sId
+                  );
+                  onSimulateIncident(sId, sName);
+                }}
+                className="w-full mb-3 py-1.5 px-3 rounded border border-rose-500/30 bg-rose-950/20 text-xs font-mono font-medium text-rose-300 hover:bg-rose-950/30 flex items-center justify-center gap-1.5 transition-colors cursor-pointer"
+              >
+                <Flame className="w-3.5 h-3.5 text-rose-400" />
+                Simulate Incident on This Service
+              </button>
+            )}
+
             {/* Properties List */}
-            <div className="space-y-1.5 max-h-[320px] overflow-y-auto pr-1">
-              <span className="text-[10px] text-[var(--text-muted)] font-semibold uppercase tracking-wider block">
-                FalkorDB Properties:
+            <div className="space-y-1 max-h-[300px] overflow-y-auto pr-1">
+              <span className="text-[10px] text-zinc-500 font-mono uppercase tracking-wider block mb-1">
+                FalkorDB Node Properties:
               </span>
               {Object.entries(inspectedNode.properties || {}).map(([k, v]) => (
                 <div
                   key={k}
-                  className="bg-[var(--bg-primary)] p-2 rounded border border-[var(--border-dim)] font-mono text-[11px]"
+                  className="bg-[#080a0f] p-1.5 rounded border border-[#1c202b] font-mono text-[10px]"
                 >
-                  <span className="text-[var(--text-muted)]">{k}: </span>
-                  <span className="text-[var(--accent-cyan)] font-medium whitespace-pre-wrap break-all">
+                  <span className="text-zinc-500">{k}: </span>
+                  <span className="text-zinc-200 font-medium whitespace-pre-wrap break-all">
                     {typeof v === 'object' ? JSON.stringify(v) : String(v)}
                   </span>
                 </div>
@@ -578,11 +713,11 @@ export default function CognitiveGraphCanvas({
           </div>
 
           {/* Footer Close */}
-          <div className="pt-3 border-t border-[var(--border-dim)] flex items-center justify-between text-[11px] text-[var(--text-muted)]">
-            <span>Layer: {getNodeLayer(inspectedNode.labels).toUpperCase()}</span>
+          <div className="pt-2.5 border-t border-[#1c202b] flex items-center justify-between text-[10px] font-mono text-zinc-500">
+            <span>LAYER: {getNodeLayer(inspectedNode.labels).toUpperCase()}</span>
             <button
               onClick={() => setInspectedNode(null)}
-              className="px-2 py-1 rounded bg-[var(--bg-elevated)] hover:bg-[var(--bg-primary)] text-[var(--text-primary)]"
+              className="px-2 py-0.5 rounded bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 text-zinc-300 cursor-pointer"
             >
               Close
             </button>
