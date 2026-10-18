@@ -268,4 +268,4 @@ In compliance with **Hackathon Rule 11**:
 ---
 
 ## 📜 License
-MIT License. Created for the **Graph Hacks Hackathon 2026**.
+ Created for the **Graph Hacks Hackathon 2026**.
